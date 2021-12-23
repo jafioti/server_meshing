@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::{mpsc::{Sender, Receiver}, Mutex, atomic::Ordering}, net::UdpSocket};
+use std::{collections::{HashMap, HashSet}, sync::{mpsc::{Sender, Receiver}, Mutex}, net::UdpSocket};
 use crate::game::InterpolatePosition;
 use bevy::prelude::*;
 use game_structs::{Player, operations::{PositionUpdate, PlayerRegister}};
@@ -15,27 +15,37 @@ pub fn sync_positions(
     receive_port: Res<crate::ReceivePort>
 ) {
     let current_player_transform = main_player_query.iter().next().unwrap().1;
-    let server_num: usize = if current_player_transform.translation.x < 0. {1} else {0}; // Positive X goes on server 0, negative goes on server 1
-    let last_server = server.0.load(Ordering::Relaxed);
-    let switched_server = last_server != server_num;
+    let current_servers: HashSet<usize> = match current_player_transform.translation.x {
+        x if x > 1. => vec![0_usize],
+        x if x < -1. => vec![1],
+        _ => vec![0, 1]
+    }.into_iter().collect();
+    let last_servers = {
+        server.0.lock().unwrap().clone()
+    };
+    let switched_server = last_servers != current_servers;
 
     // Switch server if nessacary
     if switched_server {
-        // Send leave request to last server
-        reqwest::blocking::Client::new().post(format!("{}/unregister_player", crate::SERVER_ADDRESSES[last_server])).header("Content-Type", "application/json")
-            .body(serde_json::to_string(&current_player_struct.id).unwrap())
-            .send().unwrap();
-        // Send join request to new server
-        reqwest::blocking::Client::new().post(format!("{}/register_player", crate::SERVER_ADDRESSES[server_num])).header("Content-Type", "application/json")
-            .body(serde_json::to_string(
-                &PlayerRegister {
-                    player: current_player_struct.clone(),
-                    address: format!("127.0.0.1:{}", receive_port.0)
-                }
-            ).unwrap())
-            .send().unwrap();
+        // Send leave request to servers we are leaving
+        for server in last_servers.difference(&current_servers) {
+            reqwest::blocking::Client::new().post(format!("{}/unregister_player", crate::SERVER_ADDRESSES[*server])).header("Content-Type", "application/json")
+                .body(serde_json::to_string(&current_player_struct.id).unwrap())
+                .send().unwrap();
+        }
+        // Send join request to new servers we are joining
+        for server in current_servers.difference(&last_servers) {
+            reqwest::blocking::Client::new().post(format!("{}/register_player", crate::SERVER_ADDRESSES[*server])).header("Content-Type", "application/json")
+                .body(serde_json::to_string(
+                    &PlayerRegister {
+                        player: current_player_struct.clone(),
+                        address: format!("127.0.0.1:{}", receive_port.0)
+                    }
+                ).unwrap())
+                .send().unwrap();
+        }
         // Switch server resource
-        server.0.store(server_num, Ordering::Release);
+        *server.0.lock().unwrap() = current_servers.clone();
     }
 
     // Unload all position updates from channel buffer
@@ -67,8 +77,10 @@ pub fn sync_positions(
         player_id: current_player_struct.id,
         position: current_player_transform.translation
     };
-    socket.send_to(&bincode::serialize(&position_update).unwrap(), crate::SERVER_RECEIVING_PORTS[server_num])
-        .expect("Failed to send position update");
+    for server in current_servers {
+        socket.send_to(&bincode::serialize(&position_update).unwrap(), crate::SERVER_RECEIVING_PORTS[server])
+            .expect("Failed to send position update");
+    }
 }
 
 /// Sync players from server
@@ -77,12 +89,17 @@ pub fn sync_players(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>,
     server: Res<crate::Server>,
     mut other_player_query: Query<(Entity, &Player), With<InterpolatePosition>>,
     current_player_struct: Res<Player>) {
-    let server_num = server.0.load(Ordering::Relaxed);
+    let server_nums = {
+        server.0.lock().unwrap().clone()
+    };
 
     // Get players
-    let mut players: HashMap<Uuid, bool> = reqwest::blocking::get(format!("{}/get_players", crate::SERVER_ADDRESSES[server_num]))
-        .unwrap().json::<HashMap<Uuid, Player>>().unwrap() // Parse original hashmap
-        .into_iter().map(|(k, _)| (k, k == current_player_struct.id)).collect(); // Replace values with false
+    let mut players: HashMap<Uuid, bool> = HashMap::new();
+    for server in server_nums {
+        players.extend(reqwest::blocking::get(format!("{}/get_players", crate::SERVER_ADDRESSES[server]))
+            .unwrap().json::<HashMap<Uuid, Player>>().unwrap() // Parse original hashmap
+            .into_iter().map(|(k, _)| (k, k == current_player_struct.id)).collect::<HashMap<Uuid, bool>>()); // Replace values with false
+    }
 
     let mut entities_to_kill = vec![];
     for (entity, player) in other_player_query.iter_mut() {

@@ -3,7 +3,6 @@ use std::{sync::mpsc::{Sender, Receiver}, net::UdpSocket};
 use crate::SessionStruct;
 
 pub fn send_positions(session: std::sync::Arc<std::sync::RwLock<SessionStruct>>, receiver: Receiver<Vec<u8>>, socket: UdpSocket) {
-
     // Get position update from queue
     while let Ok(position_update) = receiver.recv() {
         // Send position update to all recipients

@@ -1,5 +1,3 @@
-use std::sync::atomic::Ordering;
-
 use bevy::{prelude::*, app::AppExit};
 use game_structs::Player;
 
@@ -84,8 +82,10 @@ pub fn interpolate_positions(mut query: Query<(&mut Transform, &InterpolatePosit
 pub fn exit_system(keys: Res<Input<KeyCode>>, player: Res<Player>, mut exit: EventWriter<AppExit>, server: Res<crate::Server>) {
     for key in keys.get_pressed() {
         if *key == KeyCode::Escape {
-            let server_num = server.0.load(Ordering::Relaxed);
-            crate::multiplayer::send_exit_to_server(player.id, server_num);
+            let servers = server.0.lock().unwrap();
+            for server in servers.iter() {
+                crate::multiplayer::send_exit_to_server(player.id, *server);
+            }
             exit.send(AppExit);
         }
     }
