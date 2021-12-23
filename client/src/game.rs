@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use bevy::{prelude::*, app::AppExit};
 use game_structs::Player;
 
@@ -22,11 +24,11 @@ pub fn setup(
         material: materials.add(Color::rgb(0.3, 0.5, 0.3).into()),
         ..Default::default()
     });
-    // cube
+    // Player
     commands.spawn_bundle(PbrBundle {
         mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
         material: materials.add(Color::rgb(0.0, 0.2, 1.0).into()),
-        transform: Transform::from_xyz(0.0, 0.5, 0.0),
+        transform: Transform::from_xyz(2.0, 0.5, 0.0),
         ..Default::default()
     }).insert(Player{id:player.id})
     .insert(CurrentPlayer{});
@@ -79,10 +81,11 @@ pub fn interpolate_positions(mut query: Query<(&mut Transform, &InterpolatePosit
     }
 }
 
-pub fn exit_system(keys: Res<Input<KeyCode>>, player: Res<Player>, mut exit: EventWriter<AppExit>) {
+pub fn exit_system(keys: Res<Input<KeyCode>>, player: Res<Player>, mut exit: EventWriter<AppExit>, server: Res<crate::Server>) {
     for key in keys.get_pressed() {
         if *key == KeyCode::Escape {
-            crate::multiplayer::send_exit_to_server(player.id);
+            let server_num = server.0.load(Ordering::Relaxed);
+            crate::multiplayer::send_exit_to_server(player.id, server_num);
             exit.send(AppExit);
         }
     }

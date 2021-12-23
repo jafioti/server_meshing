@@ -4,7 +4,6 @@ use rocket::{
     serde::json::Json, State,
 };
 use game_structs::{
-    Player, Vec3,
     operations::PlayerRegister
 };
 use crate::Session;
@@ -13,7 +12,9 @@ use crate::Session;
 pub fn register_player(session: &State<Session>, player_register: Json<PlayerRegister>) -> String {
     let mut session = session.write().unwrap();
     let mut player = player_register.player.clone();
-    player.id = Uuid::new_v4();
+    if player.id == Uuid::default() { // If player already has an ID, don't assign a new one
+        player.id = Uuid::new_v4();
+    }
     session.players.insert(player.id, player.clone());
     session.addresses.insert(player.id, player_register.address.clone());
     serde_json::to_string(&player.id).unwrap()

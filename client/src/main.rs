@@ -2,7 +2,7 @@ mod game;
 mod multiplayer;
 
 use clap::Parser;
-use std::{sync::{mpsc::{Sender, Receiver, self}, Mutex}, net::UdpSocket, thread};
+use std::{sync::{mpsc::{Sender, Receiver, self}, Mutex, atomic::AtomicUsize}, net::UdpSocket, thread};
 use bevy::{prelude::*, core::FixedTimestep};
 use game_structs::{
     Player,
@@ -12,6 +12,9 @@ use game_structs::{
     }
 };
 use uuid::Uuid;
+
+static SERVER_ADDRESSES: [&str; 2] = ["http://127.0.0.1:8000", "http://127.0.0.1:8001"];
+static SERVER_RECEIVING_PORTS: [&str; 2] = ["127.0.0.1:41794", "127.0.0.1:47810"];
 
 fn main() {
     let args = Args::parse();
@@ -43,6 +46,8 @@ fn main() {
         .insert_resource(player)
         .insert_resource(Mutex::new(receiver))
         .insert_resource(send_socket)
+        .insert_resource(Server(AtomicUsize::new(0)))
+        .insert_resource(ReceivePort(args.receive))
         .add_plugins(DefaultPlugins)
         .add_startup_system(game::setup.system())
         .add_system(game::move_block.system())
@@ -58,7 +63,7 @@ fn main() {
 }
 
 #[derive(Parser, Debug)]
-#[clap(name = "Sidekick AI System Version Orchestration")]
+#[clap(name = "Client")]
 struct Args {
     /// The port to send updates to the server from
     #[clap(short, long)]
@@ -68,3 +73,6 @@ struct Args {
     #[clap(short, long)]
     receive: String,
 }
+
+pub struct Server(AtomicUsize);
+pub struct ReceivePort(String);

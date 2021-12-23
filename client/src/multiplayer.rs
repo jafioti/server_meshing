@@ -1,20 +1,44 @@
-use std::{collections::HashMap, sync::{mpsc::{Sender, Receiver}, Mutex}, net::UdpSocket};
+use std::{collections::HashMap, sync::{mpsc::{Sender, Receiver}, Mutex, atomic::Ordering}, net::UdpSocket};
 use crate::game::InterpolatePosition;
 use bevy::prelude::*;
-use game_structs::{Player, operations::PositionUpdate};
+use game_structs::{Player, operations::{PositionUpdate, PlayerRegister}};
 use uuid::Uuid;
 
 #[allow(clippy::too_many_arguments)]
 pub fn sync_positions(
-    mut other_player_query: Query<(Entity, &Player, &mut InterpolatePosition)>, 
+    mut other_player_query: Query<(Entity, &Player, &mut Transform, &mut InterpolatePosition)>, 
     main_player_query: Query<(&Player, &Transform), Without<InterpolatePosition>>,
     current_player_struct: Res<Player>, 
     mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, 
     mut materials: ResMut<Assets<StandardMaterial>>,
     socket: Res<UdpSocket>,
-    receiver: Res<Mutex<Receiver<PositionUpdate>>>
+    receiver: Res<Mutex<Receiver<PositionUpdate>>>,
+    server: Res<crate::Server>,
+    receive_port: Res<crate::ReceivePort>
 ) {
     let current_player_transform = main_player_query.iter().next().unwrap().1;
+    let server_num: usize = if current_player_transform.translation.x < 0. {1} else {0}; // Positive X goes on server 0, negative goes on server 1
+    let last_server = server.0.load(Ordering::Relaxed);
+    let switched_server = last_server != server_num;
+
+    // Switch server if nessacary
+    if switched_server {
+        // Send leave request to last server
+        reqwest::blocking::Client::new().post(format!("{}/unregister_player", crate::SERVER_ADDRESSES[last_server])).header("Content-Type", "application/json")
+            .body(serde_json::to_string(&current_player_struct.id).unwrap())
+            .send().unwrap();
+        // Send join request to new server
+        reqwest::blocking::Client::new().post(format!("{}/register_player", crate::SERVER_ADDRESSES[server_num])).header("Content-Type", "application/json")
+            .body(serde_json::to_string(
+                &PlayerRegister {
+                    player: current_player_struct.clone(),
+                    address: format!("127.0.0.1:{}", receive_port.0)
+                }
+            ).unwrap())
+            .send().unwrap();
+        // Switch server resource
+        server.0.store(server_num, Ordering::Release);
+    }
 
     // Unload all position updates from channel buffer
     let mut position_updates = HashMap::new();
@@ -30,13 +54,17 @@ pub fn sync_positions(
     }
 
     // Get players
-    let mut players: HashMap<Uuid, bool> = reqwest::blocking::get("http://127.0.0.1:8000/get_players")
+    let mut players: HashMap<Uuid, bool> = reqwest::blocking::get(format!("{}/get_players", crate::SERVER_ADDRESSES[server_num]))
         .unwrap().json::<HashMap<Uuid, Player>>().unwrap() // Parse original hashmap
         .into_iter().map(|(k, _)| (k, k == current_player_struct.id)).collect(); // Replace values with false
 
     let mut entities_to_kill = vec![];
-    for (entity, player, mut interpolate_position) in other_player_query.iter_mut() {
+    for (entity, player, mut transform, mut interpolate_position) in other_player_query.iter_mut() {
         if let Some(pu) = position_updates.get(&player.id) {
+            if transform.translation == Vec3::ZERO {
+                // First time setting position, don't interpolate
+                transform.translation = pu.position;
+            }
             interpolate_position.target = pu.position;
         }
 
@@ -68,7 +96,7 @@ pub fn sync_positions(
         player_id: current_player_struct.id,
         position: current_player_transform.translation
     };
-    socket.send_to(&bincode::serialize(&position_update).unwrap(), "127.0.0.1:41794")
+    socket.send_to(&bincode::serialize(&position_update).unwrap(), crate::SERVER_RECEIVING_PORTS[server_num])
         .expect("Failed to send position update");
 }
 
@@ -87,8 +115,8 @@ pub fn capture_changes(sender: Sender<PositionUpdate>, socket: UdpSocket) {
     }
 }
 
-pub fn send_exit_to_server(player_id: Uuid) {
-    reqwest::blocking::Client::new().post("http://127.0.0.1:8000/unregister_player").header("Content-Type", "application/json")
+pub fn send_exit_to_server(player_id: Uuid, server_num: usize) {
+    reqwest::blocking::Client::new().post(format!("{}/unregister_player", crate::SERVER_ADDRESSES[server_num])).header("Content-Type", "application/json")
         .body(serde_json::to_string(&player_id).unwrap())
         .send().unwrap();
 }
