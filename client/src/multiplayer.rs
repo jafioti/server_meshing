@@ -6,11 +6,9 @@ use uuid::Uuid;
 
 #[allow(clippy::too_many_arguments)]
 pub fn sync_positions(
-    mut other_player_query: Query<(Entity, &Player, &mut Transform, &mut InterpolatePosition)>, 
+    mut other_player_query: Query<(&Player, &mut Transform, &mut InterpolatePosition)>, 
     main_player_query: Query<(&Player, &Transform), Without<InterpolatePosition>>,
-    current_player_struct: Res<Player>, 
-    mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, 
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    current_player_struct: Res<Player>,
     socket: Res<UdpSocket>,
     receiver: Res<Mutex<Receiver<PositionUpdate>>>,
     server: Res<crate::Server>,
@@ -53,21 +51,41 @@ pub fn sync_positions(
         }
     }
 
+    let initial_position = Vec3::ONE * 10000.;
+    for (player, mut transform, mut interpolate_position) in other_player_query.iter_mut() {
+        if let Some(pu) = position_updates.get(&player.id) {
+            if transform.translation == initial_position {
+                // First time setting position, don't interpolate
+                transform.translation = pu.position;
+            }
+            interpolate_position.target = pu.position;
+        }
+    }
+
+    // Send position to server
+    let position_update = PositionUpdate {
+        player_id: current_player_struct.id,
+        position: current_player_transform.translation
+    };
+    socket.send_to(&bincode::serialize(&position_update).unwrap(), crate::SERVER_RECEIVING_PORTS[server_num])
+        .expect("Failed to send position update");
+}
+
+/// Sync players from server
+pub fn sync_players(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, 
+    mut materials: ResMut<Assets<StandardMaterial>>, 
+    server: Res<crate::Server>,
+    mut other_player_query: Query<(Entity, &Player), With<InterpolatePosition>>,
+    current_player_struct: Res<Player>) {
+    let server_num = server.0.load(Ordering::Relaxed);
+
     // Get players
     let mut players: HashMap<Uuid, bool> = reqwest::blocking::get(format!("{}/get_players", crate::SERVER_ADDRESSES[server_num]))
         .unwrap().json::<HashMap<Uuid, Player>>().unwrap() // Parse original hashmap
         .into_iter().map(|(k, _)| (k, k == current_player_struct.id)).collect(); // Replace values with false
 
     let mut entities_to_kill = vec![];
-    for (entity, player, mut transform, mut interpolate_position) in other_player_query.iter_mut() {
-        if let Some(pu) = position_updates.get(&player.id) {
-            if transform.translation == Vec3::ZERO {
-                // First time setting position, don't interpolate
-                transform.translation = pu.position;
-            }
-            interpolate_position.target = pu.position;
-        }
-
+    for (entity, player) in other_player_query.iter_mut() {
         if let Some(p) = players.get_mut(&player.id) {
             *p = true;
         } else {
@@ -81,23 +99,14 @@ pub fn sync_positions(
 
     // Spawn players we haven't seen
     for (i, _) in players.iter().filter(|(_, s)| !**s) {
-        let position = if let Some(pu) = position_updates.get(i) {pu.position} else {Vec3::ZERO};
         commands.spawn_bundle(PbrBundle {
             mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
             material: materials.add(Color::rgb(1.0, 0.2, 0.2).into()),
-            transform: Transform::from_translation(position),
+            transform: Transform::from_translation(Vec3::ONE * 10000.),
             ..Default::default()
         }).insert(Player{id:*i})
-        .insert(InterpolatePosition{target: position});
+        .insert(InterpolatePosition{target: Vec3::ONE * 10000.});
     }
-
-    // Send position to server
-    let position_update = PositionUpdate {
-        player_id: current_player_struct.id,
-        position: current_player_transform.translation
-    };
-    socket.send_to(&bincode::serialize(&position_update).unwrap(), crate::SERVER_RECEIVING_PORTS[server_num])
-        .expect("Failed to send position update");
 }
 
 // Capture any position changes sent from server and put in queue

@@ -53,9 +53,13 @@ fn main() {
         .add_system(game::move_block.system())
         .add_system(game::interpolate_positions.system())
         .add_system(game::exit_system.system())
-        .add_stage("multiplayer_sync", SystemStage::parallel()
+        .add_stage("position_sync", SystemStage::parallel()
             .with_run_criteria(FixedTimestep::steps_per_second(20.0))
             .with_system(multiplayer::sync_positions.system())
+        )
+        .add_stage("player_sync", SystemStage::parallel()
+            .with_run_criteria(FixedTimestep::steps_per_second(4.0))
+            .with_system(multiplayer::sync_players.system())
         )
         .run();
 
