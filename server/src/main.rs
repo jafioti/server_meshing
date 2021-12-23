@@ -1,54 +1,44 @@
-use std::{sync::Mutex, collections::HashMap};
+mod endpoints;
+mod streaming;
+
+use std::sync::mpsc::{Sender, Receiver, self};
+use std::thread;
+use std::{sync::{Arc, RwLock}, collections::HashMap};
 use uuid::Uuid;
-use rocket::{
-    get, routes, post,
-    serde::json::Json, State,
-};
-use game_structs::{
-    Player, Vec3,
-    operations::PositionUpdate
-};
+use rocket::routes;
+use game_structs::{Player};
+use endpoints::*;
+use streaming::*;
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct SessionStruct {
-    pub positions: HashMap<Uuid, Vec3>,
-    pub players: HashMap<Uuid, Player>
+    pub players: HashMap<Uuid, Player>,
+    pub addresses: HashMap<Uuid, String>
 }
 
-#[get("/get_all_positions")]
-fn get_all_positions(session: &State<Session>) -> String {
-    serde_json::to_string(&session.lock().unwrap().positions).unwrap()
-}
-
-#[post("/register_player", format = "json", data = "<player>")]
-fn register_player(session: &State<Session>, mut player: Json<Player>) -> String {
-    let mut session = session.lock().unwrap();
-    player.id = Uuid::new_v4();
-    session.players.insert(player.id, player.clone());
-    session.positions.insert(player.id, Vec3::new(0., 0., 0.));
-    serde_json::to_string(&player.id).unwrap()
-}
-
-#[post("/unregister_player", format = "json", data = "<player_id>")]
-fn unregister_player(session: &State<Session>, player_id: Json<Uuid>) {
-    let mut session = session.lock().unwrap();
-    session.players.remove(&player_id);
-    session.positions.remove(&player_id);
-}
-
-#[post("/update_position", format="json", data="<position_update>")]
-fn update_position(session: &State<Session>, position_update: Json<PositionUpdate>) {
-    if let Some(p) = session.lock().unwrap().positions.get_mut(&position_update.player_id) {
-        *p = position_update.position;
-    }
-}
-
-pub type Session<'a> = Mutex<SessionStruct>;
+pub type Session = Arc<RwLock<SessionStruct>>;
 
 #[rocket::main]
 async fn main() -> Result<(), rocket::Error> {
+    let (sender, receiver): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
+    let session = Arc::new(RwLock::new(SessionStruct::default()));
+    let session1 = session.clone();
+
+    // Launch sender and receiver threads
+    let sender_handle = thread::spawn(move || {
+        send_positions(session1, receiver);
+    });
+    let receive_handle = thread::spawn(move || {
+        receive_positions(sender);
+    });
+
     rocket::build()
-        .mount("/", routes![get_all_positions, register_player, unregister_player, update_position])
-        .manage(Mutex::new(SessionStruct::default()))
-        .launch().await
+        .mount("/", routes![register_player, unregister_player, get_players])
+        .manage(session)
+        .launch().await?;
+
+    // For some reason doesn't work
+    sender_handle.join().expect("Failed to join sending thread");
+    receive_handle.join().expect("Failed to join receiving thread");
+    Ok(())
 }

@@ -7,5 +7,5 @@ use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Component)]
 pub struct Player {
-    pub id: Uuid
+    pub id: Uuid,
 }
