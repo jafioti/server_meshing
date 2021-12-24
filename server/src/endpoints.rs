@@ -32,3 +32,9 @@ pub fn get_players(session: &State<Session>) -> String {
     serde_json::to_string(&session.read().unwrap()
         .players.clone()).unwrap()
 }
+
+#[get("/get_num_players")]
+pub fn get_num_players(session: &State<Session>) -> String {
+    serde_json::to_string(&session.read().unwrap()
+        .players.len()).unwrap()
+}

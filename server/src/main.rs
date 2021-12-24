@@ -48,7 +48,7 @@ async fn main() -> Result<(), rocket::Error> {
         .merge(("port", args.main));
 
     rocket::custom(figment)
-        .mount("/", routes![register_player, unregister_player, get_players])
+        .mount("/", routes![register_player, unregister_player, get_players, get_num_players])
         .manage(session)
         .launch().await?;
 

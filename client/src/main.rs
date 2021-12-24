@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 static SERVER_ADDRESSES: [&str; 2] = ["http://127.0.0.1:8000", "http://127.0.0.1:8001"];
 static SERVER_RECEIVING_PORTS: [&str; 2] = ["127.0.0.1:41794", "127.0.0.1:47810"];
+static COORD_SERVER_ADDRESS: &str = "http://127.0.0.1:8002";
 
 fn main() {
     let args = Args::parse();
@@ -60,6 +61,10 @@ fn main() {
         .add_stage("player_sync", SystemStage::parallel()
             .with_run_criteria(FixedTimestep::steps_per_second(4.0))
             .with_system(multiplayer::sync_players.system())
+        )
+        .add_stage("server_sync", SystemStage::parallel()
+            .with_run_criteria(FixedTimestep::steps_per_second(1.0))
+            .with_system(multiplayer::sync_servers.system())
         )
         .run();
 

@@ -12,41 +12,11 @@ pub fn sync_positions(
     socket: Res<UdpSocket>,
     receiver: Res<Mutex<Receiver<PositionUpdate>>>,
     server: Res<crate::Server>,
-    receive_port: Res<crate::ReceivePort>
 ) {
     let current_player_transform = main_player_query.iter().next().unwrap().1;
-    let current_servers: HashSet<usize> = match current_player_transform.translation.x {
-        x if x > 1. => vec![0_usize],
-        x if x < -1. => vec![1],
-        _ => vec![0, 1]
-    }.into_iter().collect();
-    let last_servers = {
+    let current_servers: HashSet<usize> = {
         server.0.lock().unwrap().clone()
     };
-    let switched_server = last_servers != current_servers;
-
-    // Switch server if nessacary
-    if switched_server {
-        // Send leave request to servers we are leaving
-        for server in last_servers.difference(&current_servers) {
-            reqwest::blocking::Client::new().post(format!("{}/unregister_player", crate::SERVER_ADDRESSES[*server])).header("Content-Type", "application/json")
-                .body(serde_json::to_string(&current_player_struct.id).unwrap())
-                .send().unwrap();
-        }
-        // Send join request to new servers we are joining
-        for server in current_servers.difference(&last_servers) {
-            reqwest::blocking::Client::new().post(format!("{}/register_player", crate::SERVER_ADDRESSES[*server])).header("Content-Type", "application/json")
-                .body(serde_json::to_string(
-                    &PlayerRegister {
-                        player: current_player_struct.clone(),
-                        address: format!("127.0.0.1:{}", receive_port.0)
-                    }
-                ).unwrap())
-                .send().unwrap();
-        }
-        // Switch server resource
-        *server.0.lock().unwrap() = current_servers.clone();
-    }
 
     // Unload all position updates from channel buffer
     let mut position_updates = HashMap::new();
@@ -80,6 +50,44 @@ pub fn sync_positions(
     for server in current_servers {
         socket.send_to(&bincode::serialize(&position_update).unwrap(), crate::SERVER_RECEIVING_PORTS[server])
             .expect("Failed to send position update");
+    }
+}
+
+/// Update the current servers we are running on
+pub fn sync_servers(server: Res<crate::Server>, 
+    current_player_struct: Res<Player>, 
+    main_player_query: Query<(&Player, &Transform), Without<InterpolatePosition>>,
+    receive_port: Res<crate::ReceivePort>
+) {
+    let current_player_transform = main_player_query.iter().next().unwrap().1;
+    let last_servers = {
+        server.0.lock().unwrap().clone()
+    };
+    let new_servers = reqwest::blocking::Client::new().post(format!("{}/get_server", crate::COORD_SERVER_ADDRESS)).header("Content-Type", "application/json")
+        .body(serde_json::to_string(&current_player_transform.translation).unwrap())
+        .send().unwrap().json::<HashSet<usize>>().unwrap();
+    let switched_server = last_servers != new_servers;
+    // Switch server if nessacary
+    if switched_server {
+        // Send leave request to servers we are leaving
+        for server in last_servers.difference(&new_servers) {
+            reqwest::blocking::Client::new().post(format!("{}/unregister_player", crate::SERVER_ADDRESSES[*server])).header("Content-Type", "application/json")
+                .body(serde_json::to_string(&current_player_struct.id).unwrap())
+                .send().unwrap();
+        }
+        // Send join request to new servers we are joining
+        for server in new_servers.difference(&last_servers) {
+            reqwest::blocking::Client::new().post(format!("{}/register_player", crate::SERVER_ADDRESSES[*server])).header("Content-Type", "application/json")
+                .body(serde_json::to_string(
+                    &PlayerRegister {
+                        player: current_player_struct.clone(),
+                        address: format!("127.0.0.1:{}", receive_port.0)
+                    }
+                ).unwrap())
+                .send().unwrap();
+        }
+        // Switch server resource
+        *server.0.lock().unwrap() = new_servers;
     }
 }
 
